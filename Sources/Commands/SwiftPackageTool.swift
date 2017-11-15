@@ -164,11 +164,41 @@ public class SwiftPackageTool: SwiftTool<PackageToolOptions> {
             let outpath = try Xcodeproj.generate(
                 outputDir: dstdir,
                 projectName: projectName,
+                sdkRoot: .macosx,
+                version: "10.10",
                 graph: graph,
                 options: options.xcodeprojOptions)
 
             print("generated:", outpath.prettyPath)
 
+        case .generateiOSXcodeproj:
+            let graph = try loadPackageGraph()
+            
+            let projectName: String
+            let dstdir: AbsolutePath
+            
+            switch options.outputPath {
+            case let outpath? where outpath.suffix == ".xcodeproj":
+                // if user specified path ending with .xcodeproj, use that
+                projectName = String(outpath.basename.dropLast(10))
+                dstdir = outpath.parentDirectory
+            case let outpath?:
+                dstdir = outpath
+                projectName = graph.rootPackages[0].name
+            case _:
+                dstdir = try getPackageRoot()
+                projectName = graph.rootPackages[0].name
+            }
+            let outpath = try Xcodeproj.generate(
+                outputDir: dstdir,
+                projectName: projectName,
+                sdkRoot: .iphoneos,
+                version: "11.0",
+                graph: graph,
+                options: options.xcodeprojOptions)
+            
+            print("generated:", outpath.prettyPath)
+            
         case .describe:
             let graph = try loadPackageGraph()
             describe(graph.rootPackages[0].underlyingPackage, in: options.describeMode, on: stdoutStream)
@@ -312,6 +342,27 @@ public class SwiftPackageTool: SwiftTool<PackageToolOptions> {
                 $0.outputPath = $3?.path
             })
 
+        let generateiOSXcodeParser = parser.add(
+            subparser: PackageMode.generateiOSXcodeproj.rawValue,
+            overview: "Generates an Xcode project for iOS")
+        binder.bind(
+            generateiOSXcodeParser.add(
+                option: "--xcconfig-overrides", kind: PathArgument.self,
+                usage: "Path to xcconfig file"),
+            generateiOSXcodeParser.add(
+                option: "--enable-code-coverage", kind: Bool.self,
+                usage: "Enable code coverage in the generated project"),
+            generateiOSXcodeParser.add(
+                option: "--output", kind: PathArgument.self,
+                usage: "Path where the Xcode project should be generated"),
+            to: {
+                $0.xcodeprojOptions = XcodeprojOptions(
+                    flags: $0.buildFlags,
+                    xcconfigOverrides: $1?.path,
+                    isCodeCoverageEnabled: $2)
+                $0.outputPath = $3?.path
+            })
+
         let completionToolParser = parser.add(
             subparser: PackageMode.completionTool.rawValue,
             overview: "Completion tool (for shell completions)")
@@ -414,6 +465,7 @@ public enum PackageMode: String, StringEnumArgument {
     case edit
     case fetch
     case generateXcodeproj = "generate-xcodeproj"
+    case generateiOSXcodeproj = "generate-ios-xcodeproj"
     case completionTool = "completion-tool"
     case initPackage = "init"
     case reset

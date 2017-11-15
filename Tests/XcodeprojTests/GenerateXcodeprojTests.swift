@@ -28,7 +28,7 @@ class GenerateXcodeprojTests: XCTestCase {
             XCTAssertFalse(diagnostics.hasErrors)
 
             let projectName = "DummyProjectName"
-            let outpath = try Xcodeproj.generate(outputDir: dstdir, projectName: projectName, graph: graph, options: XcodeprojOptions())
+            let outpath = try Xcodeproj.generate(outputDir: dstdir, projectName: projectName, sdkRoot: .macosx, version: "10.10", graph: graph, options: XcodeprojOptions())
 
             XCTAssertDirectoryExists(outpath)
             XCTAssertEqual(outpath, dstdir.appending(component: projectName + ".xcodeproj"))
@@ -66,7 +66,8 @@ class GenerateXcodeprojTests: XCTestCase {
 
         let options = XcodeprojOptions(xcconfigOverrides: AbsolutePath("/doesntexist"))
         do {
-            _ = try xcodeProject(xcodeprojPath: AbsolutePath.root.appending(component: "xcodeproj"),
+            _ = try xcodeProject(xcodeprojPath: AbsolutePath.root.appending(component: "xcodeproj"), 
+                                 sdkRoot: .macosx, version: "10.10",
                                  graph: graph, extraDirs: [], options: options, fileSystem: fileSystem)
             XCTFail("Project generation should have failed")
         } catch ProjectGenerationError.xcconfigOverrideNotFound(let path) {
@@ -85,6 +86,7 @@ class GenerateXcodeprojTests: XCTestCase {
         XCTAssertFalse(diagnostics.hasErrors)
 
         _ = try xcodeProject(xcodeprojPath: AbsolutePath.root.appending(component: "xcodeproj"),
+                             sdkRoot: .macosx, version: "10.10",
                              graph: graph, extraDirs: [], options: XcodeprojOptions(), fileSystem: fileSystem,
                              warningStream: warningStream)
 

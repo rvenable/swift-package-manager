@@ -30,6 +30,8 @@ public enum ProjectGenerationError: Swift.Error {
 /// directory to which the .xcodeproj is being generated.
 public func pbxproj(
         xcodeprojPath: AbsolutePath,
+        sdkRoot: Xcode.SDKRoot,
+        version: String,
         graph: PackageGraph,
         extraDirs: [AbsolutePath],
         options: XcodeprojOptions,
@@ -37,6 +39,8 @@ public func pbxproj(
     ) throws -> String {
     let project = try xcodeProject(
         xcodeprojPath: xcodeprojPath,
+        sdkRoot: sdkRoot,
+        version: version,
         graph: graph,
         extraDirs: extraDirs,
         options: options,
@@ -54,6 +58,8 @@ fileprivate let invalidXcodeModuleNames = Set(["Modules", "Headers", "Versions"]
 
 func xcodeProject(
     xcodeprojPath: AbsolutePath,
+    sdkRoot: Xcode.SDKRoot,
+    version: String,
     graph: PackageGraph,
     extraDirs: [AbsolutePath],
     options: XcodeprojOptions,
@@ -108,14 +114,14 @@ func xcodeProject(
     ]
 
     // Set the default `SDKROOT` to the latest macOS SDK.
-    projectSettings.common.SDKROOT = "macosx"
+    projectSettings.common.SDKROOT = sdkRoot.rawValue
 
     // Set a conservative default deployment target.
     // FIXME: There needs to be some kind of control over this.  But currently
     // it is required to set this in order for SwiftPM to be able to self-host
     // in Xcode; otherwise, the PackageDescription library will be incompatible
     // with the default deployment target we pass when building.
-    projectSettings.common.MACOSX_DEPLOYMENT_TARGET = "10.10"
+    projectSettings.common.MACOSX_DEPLOYMENT_TARGET = version
 
     // Default to @rpath-based install names.  Any target that links against
     // these products will need to establish the appropriate runpath search

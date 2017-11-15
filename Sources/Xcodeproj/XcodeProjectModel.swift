@@ -304,6 +304,18 @@ public struct Xcode {
         }
     }
 
+    public enum SDKRoot: String {
+        case macosx
+        case iphoneos
+        
+        var name: String {
+            switch self {
+            case .macosx: return "macOS"
+            case .iphoneos: return "iOS"
+            }
+        }
+    }
+    
     /// A table of build settings, which for the sake of simplicity consists
     /// (in this simplified model) of a set of common settings, and a set of
     /// overlay settings for Debug and Release builds.  There can also be a

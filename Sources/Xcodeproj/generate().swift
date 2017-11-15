@@ -46,6 +46,8 @@ public struct XcodeprojOptions {
 public func generate(
     outputDir: AbsolutePath,
     projectName: String,
+    sdkRoot: Xcode.SDKRoot,
+    version: String,
     graph: PackageGraph,
     options: XcodeprojOptions
 ) throws -> AbsolutePath {
@@ -55,7 +57,7 @@ public func generate(
     let srcroot = graph.rootPackages[0].path
 
     // Determine the path of the .xcodeproj wrapper directory.
-    let xcodeprojName = "\(projectName).xcodeproj"
+    let xcodeprojName = "\(projectName)-\(sdkRoot.name).xcodeproj"
     let xcodeprojPath = outputDir.appending(RelativePath(xcodeprojName))
 
     // Determine the path of the scheme directory (it's inside the .xcodeproj).
@@ -73,7 +75,7 @@ public func generate(
     try open(xcodeprojPath.appending(component: "project.pbxproj")) { stream in
         // FIXME: This could be more efficient by directly writing to a stream
         // instead of first creating a string.
-        let str = try pbxproj(xcodeprojPath: xcodeprojPath, graph: graph, extraDirs: extraDirs, options: options)
+        let str = try pbxproj(xcodeprojPath: xcodeprojPath, sdkRoot: sdkRoot, version: version, graph: graph, extraDirs: extraDirs, options: options)
         stream(str)
     }
 

@@ -172,7 +172,7 @@ public final class InMemoryGitRepository {
         tagsMap[name] = head.hash
     }
 
-    public func hasUncommitedChanges() -> Bool {
+    public func hasUncommittedChanges() -> Bool {
         return isDirty
     }
 
@@ -183,8 +183,8 @@ public final class InMemoryGitRepository {
 
 extension InMemoryGitRepository: FileSystem {
 
-    public func exists(_ path: AbsolutePath) -> Bool {
-        return head.fileSystem.exists(path)
+    public func exists(_ path: AbsolutePath, followSymlink: Bool) -> Bool {
+        return head.fileSystem.exists(path, followSymlink: followSymlink)
     }
 
     public func isDirectory(_ path: AbsolutePath) -> Bool {
@@ -243,8 +243,8 @@ extension InMemoryGitRepository: Repository {
     }
 
     public func openFileView(revision: Revision) throws -> FileSystem {
-        var fs: FileSystem = history[revision.identifier]!.fileSystem
-        return RerootedFileSystemView(&fs, rootedAt: path)
+        let fs: FileSystem = history[revision.identifier]!.fileSystem
+        return RerootedFileSystemView(fs, rootedAt: path)
     }
 }
 
@@ -263,6 +263,10 @@ extension InMemoryGitRepository: WorkingCheckout {
 
     public func checkout(newBranch: String) throws {
         history[newBranch] = head
+    }
+
+    public func isAlternateObjectStoreValid() -> Bool {
+        return true
     }
 }
 

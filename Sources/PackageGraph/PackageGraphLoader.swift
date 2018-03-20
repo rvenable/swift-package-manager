@@ -13,6 +13,18 @@ import PackageLoading
 import PackageModel
 import Utility
 
+struct UnusedDependencyDiagnostic: DiagnosticData {
+    static let id = DiagnosticID(
+        type: UnusedDependencyDiagnostic.self,
+        name: "org.swift.diags.unused-dependency",
+        defaultBehavior: .warning,
+        description: {
+            $0 <<< "dependency" <<< { "'\($0.dependencyName)'" } <<< "is not used by any target"
+        })
+
+    public let dependencyName: String
+}
+
 enum PackageGraphError: Swift.Error {
     /// Indicates a non-root package with no targets.
     case noModules(Package)
@@ -71,14 +83,14 @@ public struct PackageGraphLoader {
             externalManifests.map({ (PackageReference.computeIdentity(packageURL: $0.url), $0) })
         let manifestMap = Dictionary(uniqueKeysWithValues: manifestMapSequence)
         let successors: (Manifest) -> [Manifest] = { manifest in
-            manifest.package.dependencies.flatMap({ 
+            manifest.package.dependencies.compactMap({ 
                 manifestMap[PackageReference.computeIdentity(packageURL: $0.url)] 
             })
         }
 
         // Construct the root manifest and root dependencies set.
         let rootManifestSet = Set(root.manifests)
-        let rootDependencies = Set(root.dependencies.flatMap({
+        let rootDependencies = Set(root.dependencies.compactMap({
             manifestMap[PackageReference.computeIdentity(packageURL: $0.url)]
         }))
         let inputManifests = root.manifests + rootDependencies
@@ -134,10 +146,50 @@ public struct PackageGraphLoader {
             diagnostics: diagnostics
         )
 
+        let rootPackages = resolvedPackages.filter({ rootManifestSet.contains($0.manifest) })
+
+        checkAllDependenciesAreUsed(rootPackages, diagnostics)
+
         return PackageGraph(
-            rootPackages: resolvedPackages.filter({ rootManifestSet.contains($0.manifest) }),
+            rootPackages: rootPackages,
             rootDependencies: resolvedPackages.filter({ rootDependencies.contains($0.manifest) })
         )
+    }
+}
+
+private func checkAllDependenciesAreUsed(_ rootPackages: [ResolvedPackage], _ diagnostics: DiagnosticsEngine) {
+    for package in rootPackages {
+        // List all dependency products dependended on by the package targets.
+        let productDependencies: Set<ResolvedProduct> = Set(package.targets.flatMap({ target in
+            return target.dependencies.compactMap({ targetDependency in
+                switch targetDependency {
+                case .product(let product):
+                    return product
+                case .target:
+                    return nil
+                }
+            })
+        }))
+
+        for dependency in package.dependencies {
+            // We continue if the dependency contains executable products to make sure we don't
+            // warn on a valid use-case for a lone dependency: swift run dependency executables.
+            guard !dependency.products.contains(where: { $0.type == .executable }) else {
+                continue
+            }
+            // Skip this check if this dependency is a system module because system module packages
+            // have no products.
+            //
+            // FIXME: Do/should we print a warning if a dependency has no products?
+            if dependency.products.isEmpty && dependency.targets.filter({ $0.type == .systemModule }).count == 1 {
+                continue
+            }
+            
+            let dependencyIsUsed = dependency.products.contains(where: productDependencies.contains)
+            if !dependencyIsUsed {
+                diagnostics.emit(data: UnusedDependencyDiagnostic(dependencyName: dependency.name))
+            }
+        }
     }
 }
 
@@ -151,7 +203,7 @@ private func createResolvedPackages(
 ) -> [ResolvedPackage] {
 
     // Create package builder objects from the input manifests.
-    let packageBuilders: [ResolvedPackageBuilder] = allManifests.flatMap({
+    let packageBuilders: [ResolvedPackageBuilder] = allManifests.compactMap({
         guard let package = manifestToPackage[$0] else {
             return nil
         }
@@ -170,7 +222,7 @@ private func createResolvedPackages(
         let package = packageBuilder.package
 
         // Establish the manifest-declared package dependencies.
-        packageBuilder.dependencies = package.manifest.package.dependencies.flatMap({
+        packageBuilder.dependencies = package.manifest.package.dependencies.compactMap({
             packageMap[PackageReference.computeIdentity(packageURL: $0.url)]
         })
 
@@ -198,7 +250,7 @@ private func createResolvedPackages(
         let package = packageBuilder.package
 
         // The diagnostics location for this package.
-        let diagnosicLocation = { PackageLocation.Local(name: package.name, packagePath: package.path) }
+        let diagnosticLocation = { PackageLocation.Local(name: package.name, packagePath: package.path) }
 
         // Get all the system module dependencies in this package.
         let systemModulesDeps = packageBuilder.dependencies
@@ -216,7 +268,7 @@ private func createResolvedPackages(
             // If a target with similar name was encountered before, we emit a diagnostic.
             let targetName = targetBuilder.target.name
             if allTargetNames.contains(targetName) {
-                diagnostics.emit(ModuleError.duplicateModule(targetName), location: diagnosicLocation())
+                diagnostics.emit(ModuleError.duplicateModule(targetName), location: diagnosticLocation())
             }
             allTargetNames.insert(targetName)
 
@@ -233,7 +285,7 @@ private func createResolvedPackages(
                     // Find the product in this package's dependency products.
                     guard let product = productDependencyMap[productRef.name] else {
                         let error = PackageGraphError.productDependencyNotFound(name: productRef.name, package: productRef.package)
-                        diagnostics.emit(error, location: diagnosicLocation())
+                        diagnostics.emit(error, location: diagnosticLocation())
                         continue
                     }
 
@@ -244,7 +296,7 @@ private func createResolvedPackages(
                         guard let dependencyPackage = packageMap[packageName.lowercased()], dependencyPackage.products.contains(product) else {
                             let error = PackageGraphError.productDependencyIncorrectPackage(
                                 name: productRef.name, package: packageName)
-                            diagnostics.emit(error, location: diagnosicLocation())
+                            diagnostics.emit(error, location: diagnosticLocation())
                             continue
                         }
                     }

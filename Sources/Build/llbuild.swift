@@ -25,9 +25,18 @@ public struct LLBuildManifestGenerator {
     /// The build plan to work on.
     public let plan: BuildPlan
 
+    /// Path to the resolved file.
+    let resolvedFile: AbsolutePath
+
+    /// The name of the build manifest renegeration node.
+    var buildManifestRegenerationNode: String {
+        return "<C.build.manifest.regeneration>"
+    }
+
     /// Create a new generator with a build plan.
-    public init(_ plan: BuildPlan) {
+    public init(_ plan: BuildPlan, resolvedFile: AbsolutePath) {
         self.plan = plan
+        self.resolvedFile = resolvedFile
     }
 
     /// A structure for targets in the manifest.
@@ -51,7 +60,7 @@ public struct LLBuildManifestGenerator {
         private var otherTargets: [Target] = []
 
         /// Append a command.
-        mutating func append(_ target: Target, isTest: Bool) {
+        mutating func append(_ target: Target, buildByDefault: Bool, isTest: Bool) {
             // Create a phony command with a virtual output node that represents the target.
             let virtualNodeName = "<\(target.name)>"
             let phonyTool = PhonyTool(inputs: target.outputs.values, outputs: [virtualNodeName])
@@ -63,14 +72,17 @@ public struct LLBuildManifestGenerator {
             newTarget.cmds.insert(phonyCommand)
             otherTargets.append(newTarget)
 
-            if !isTest {
-                main.outputs += newTarget.outputs
-                main.cmds += newTarget.cmds
+            if buildByDefault {
+                if !isTest {
+                    main.outputs += newTarget.outputs
+                    main.cmds += newTarget.cmds
+                }
+
+                // Always build everything for the test target.
+                test.outputs += newTarget.outputs
+                test.cmds += newTarget.cmds
             }
 
-            // Always build everything for the test target.
-            test.outputs += newTarget.outputs
-            test.cmds += newTarget.cmds
             allCommands += newTarget.cmds
         }
     }
@@ -80,18 +92,26 @@ public struct LLBuildManifestGenerator {
         var targets = Targets()
 
         // Create commands for all target description in the plan.
-        for buildTarget in plan.targets {
-            switch buildTarget {
-            case .swift(let target):
-                targets.append(createSwiftCompileTarget(target), isTest: target.isTestTarget)
-            case .clang(let target):
-                targets.append(createClangCompileTarget(target), isTest: target.isTestTarget)
+        for (target, description) in plan.targetMap {
+            switch description {
+            case .swift(let description):
+                // Only build targets by default if they are reachabe from a root target.
+                targets.append(createSwiftCompileTarget(description),
+                    buildByDefault: plan.graph.reachableTargets.contains(target),
+                    isTest: description.isTestTarget)
+            case .clang(let description):
+                targets.append(createClangCompileTarget(description),
+                    buildByDefault: plan.graph.reachableTargets.contains(target),
+                    isTest: description.isTestTarget)
             }
         }
 
         // Create command for all products in the plan.
-        for buildProduct in plan.buildProducts {
-            targets.append(createProductTarget(buildProduct), isTest: buildProduct.product.type == .test)
+        for (product, description) in plan.productMap {
+            // Only build products by default if they are reachabe from a root target.
+            targets.append(createProductTarget(description),
+                buildByDefault: plan.graph.reachableProducts.contains(product),
+                isTest: product.type == .test)
         }
 
         // Write the manifest.
@@ -106,14 +126,75 @@ public struct LLBuildManifestGenerator {
             stream <<< "  " <<< Format.asJSON(target.name)
             stream <<< ": " <<< Format.asJSON(target.outputs.values) <<< "\n"
         }
+
+        if plan.buildParameters.shouldEnableManifestCaching {
+            stream <<< "  " <<< Format.asJSON("regenerate")
+            stream <<< ": " <<< Format.asJSON([buildManifestRegenerationNode])
+            stream <<< "\n"
+        }
+
         stream <<< "default: " <<< Format.asJSON(targets.main.name) <<< "\n"
+
+        // Add manifest regeneration directory nodes as directory structure.
+        let manifestRegenerationInputs = self.manifestRegenerationInputs()
+        if let manifestRegenerationInputs = manifestRegenerationInputs, !manifestRegenerationInputs.dirs.isEmpty {
+            stream <<< "nodes:\n"
+            for dir in manifestRegenerationInputs.dirs {
+                stream <<< "  " <<< Format.asJSON(dir) <<< ":\n"
+                stream <<< "    is-directory-structure: true\n"
+            }
+        }
+        
         stream <<< "commands: \n"
         for command in targets.allCommands.sorted(by: { $0.name < $1.name }) {
             stream <<< "  " <<< Format.asJSON(command.name) <<< ":\n"
             command.tool.append(to: stream)
             stream <<< "\n"
         }
+
+        if let manifestRegenerationInputs = manifestRegenerationInputs {
+            // Add command for computing manifest regeneration.
+            let regenerationCommand = ShellTool(
+                description: "",
+                inputs: manifestRegenerationInputs.dirs + manifestRegenerationInputs.files,
+                outputs: [buildManifestRegenerationNode],
+                args: ["echo 1 > " + plan.buildParameters.regenerateManifestToken.asString],
+                allowMissingInputs: true
+            )
+            stream <<< "  " <<< Format.asJSON(plan.buildParameters.regenerateManifestToken.asString) <<< ":\n"
+            regenerationCommand.append(to: stream)
+        }
+        
         try localFileSystem.writeFileContents(path, bytes: stream.bytes)
+    }
+    
+    private func manifestRegenerationInputs() -> (dirs: [String], files: [String])? {
+        // If manifest caching is not enabled, just return nil from here.
+        guard plan.buildParameters.shouldEnableManifestCaching else { return nil }
+
+        var directoryNodesToTrack: [AbsolutePath] = []
+        var filesToTrack: [AbsolutePath] = []
+        
+        let graph = plan.graph
+        
+        for package in graph.packages {
+            // Track the package manifest.
+            filesToTrack.append(package.underlyingPackage.manifest.path)
+            
+            if graph.isRootPackage(package) {
+                // Track individual targets for root packages.
+                for target in package.targets {
+                    directoryNodesToTrack.append(target.sources.root)
+                }
+            } else {
+                // Track the entire package and their package manifest.
+                directoryNodesToTrack.append(package.path)
+            }
+        }
+
+        // We also need to track the resolved file.
+        filesToTrack.append(resolvedFile)
+        return (directoryNodesToTrack.map({ $0.asString + "/" }), filesToTrack.map({ $0.asString }))
     }
 
     /// Create a llbuild target for a product description.
@@ -127,10 +208,12 @@ public struct LLBuildManifestGenerator {
         } else {
             let inputs = buildProduct.objects + buildProduct.dylibs.map({ $0.binary })
             tool = ShellTool(
-                description: "Linking \(buildProduct.binary.prettyPath)",
+                description: "Linking \(buildProduct.binary.prettyPath())",
                 inputs: inputs.map({ $0.asString }),
                 outputs: [buildProduct.binary.asString],
-                args: buildProduct.linkArguments())
+                args: buildProduct.linkArguments(),
+                allowMissingInputs: false
+            )
         }
 
         var target = Target(name: buildProduct.product.llbuildTargetName)
@@ -147,7 +230,7 @@ public struct LLBuildManifestGenerator {
 
         func addStaticTargetInputs(_ target: ResolvedTarget) {
             // Ignore C Modules.
-            if target.underlyingTarget is CTarget { return }
+            if target.underlyingTarget is SystemLibraryTarget { return }
             switch plan.targetMap[target] {
             case .swift(let target)?:
                 inputs.insert(target.moduleOutputPath.asString)
@@ -190,9 +273,25 @@ public struct LLBuildManifestGenerator {
 
     /// Create a llbuild target for a Clang target description.
     private func createClangCompileTarget(_ target: ClangTargetDescription) -> Target {
+
+        let standards = [
+            (target.clangTarget.cxxLanguageStandard, SupportedLanguageExtension.cppExtensions),
+            (target.clangTarget.cLanguageStandard, SupportedLanguageExtension.cExtensions),
+        ]
+
         let commands: [Command] = target.compilePaths().map({ path in
             var args = target.basicArguments()
             args += ["-MD", "-MT", "dependencies", "-MF", path.deps.asString]
+
+            // Add language standard flag if needed.
+            if let ext = path.source.extension {
+                for (standard, validExtensions) in standards {
+                    if let languageStandard = standard, validExtensions.contains(ext) {
+                        args += ["-std=\(languageStandard)"]
+                    }
+                }
+            }
+
             args += ["-c", path.source.asString, "-o", path.object.asString]
             let clang = ClangTool(
                 desc: "Compile \(target.target.name) \(path.filename.asString)",

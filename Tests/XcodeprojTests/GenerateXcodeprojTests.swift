@@ -38,7 +38,7 @@ class GenerateXcodeprojTests: XCTestCase {
             let output = try Process.checkNonZeroExit(
                 args: "env", "-u", "TOOLCHAINS", "xcodebuild", "-list", "-project", outpath.asString).chomp()
 
-            XCTAssertEqual(output, """
+            XCTAssertTrue(output.hasPrefix("""
                Information about project "DummyProjectName":
                    Targets:
                        DummyModuleName
@@ -49,11 +49,11 @@ class GenerateXcodeprojTests: XCTestCase {
                        Debug
                        Release
                
-                   If no build configuration is specified and -scheme is not passed then "Debug" is used.
+                   If no build configuration is specified and -scheme is not passed then "Release" is used.
                
                    Schemes:
                        DummyProjectName-Package
-               """)
+               """))
         }
       #endif
     }

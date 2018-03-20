@@ -9,7 +9,7 @@
 */
 
 import POSIX
-import libc
+import SPMLibc
 
 public enum FileSystemError: Swift.Error {
     /// Access to the path is denied.
@@ -69,13 +69,13 @@ public enum FileSystemError: Swift.Error {
 extension FileSystemError {
     init(errno: Int32) {
         switch errno {
-        case libc.EACCES:
+        case SPMLibc.EACCES:
             self = .invalidAccess
-        case libc.EISDIR:
+        case SPMLibc.EISDIR:
             self = .isDirectory
-        case libc.ENOENT:
+        case SPMLibc.ENOENT:
             self = .noEntry
-        case libc.ENOTDIR:
+        case SPMLibc.ENOTDIR:
             self = .notDirectory
         default:
             self = .unknownOSError
@@ -113,9 +113,9 @@ public enum FileMode {
 /// NOTE: All of these APIs are synchronous and can block.
 //
 // FIXME: Design an asynchronous story?
-public protocol FileSystem {
+public protocol FileSystem: class {
     /// Check whether the given path exists and is accessible.
-    func exists(_ path: AbsolutePath) -> Bool
+    func exists(_ path: AbsolutePath, followSymlink: Bool) -> Bool
 
     /// Check whether the given path is accessible and a directory.
     func isDirectory(_ path: AbsolutePath) -> Bool
@@ -136,12 +136,12 @@ public protocol FileSystem {
     func getDirectoryContents(_ path: AbsolutePath) throws -> [String]
 
     /// Create the given directory.
-    mutating func createDirectory(_ path: AbsolutePath) throws
+    func createDirectory(_ path: AbsolutePath) throws
 
     /// Create the given directory.
     ///
     /// - recursive: If true, create missing parent directories if possible.
-    mutating func createDirectory(_ path: AbsolutePath, recursive: Bool) throws
+    func createDirectory(_ path: AbsolutePath, recursive: Bool) throws
 
     /// Get the contents of a file.
     ///
@@ -153,13 +153,13 @@ public protocol FileSystem {
     /// Write the contents of a file.
     //
     // FIXME: This is obviously not a very efficient or flexible API.
-    mutating func writeFileContents(_ path: AbsolutePath, bytes: ByteString) throws
+    func writeFileContents(_ path: AbsolutePath, bytes: ByteString) throws
 
     /// Recursively deletes the file system entity at `path`.
     ///
     /// If there is no file system entity at `path`, this function does nothing (in particular, this is not considered
     /// to be an error).
-    mutating func removeFileTree(_ path: AbsolutePath) throws
+    func removeFileTree(_ path: AbsolutePath) throws
 
     /// Change file mode.
     func chmod(_ mode: FileMode, path: AbsolutePath, options: Set<FileMode.Option>) throws
@@ -168,8 +168,13 @@ public protocol FileSystem {
 /// Convenience implementations (default arguments aren't permitted in protocol
 /// methods).
 public extension FileSystem {
+    /// exists override with default value.
+    func exists(_ path: AbsolutePath) -> Bool {
+        return exists(path, followSymlink: true)
+    }
+
     /// Default implementation of createDirectory(_:)
-    mutating func createDirectory(_ path: AbsolutePath) throws {
+    func createDirectory(_ path: AbsolutePath) throws {
         try createDirectory(path, recursive: false)
     }
 
@@ -179,7 +184,7 @@ public extension FileSystem {
     }
 
     /// Write to a file from a stream producer.
-    mutating func writeFileContents(_ path: AbsolutePath, body: (OutputByteStream) -> Void) throws {
+    func writeFileContents(_ path: AbsolutePath, body: (OutputByteStream) -> Void) throws {
         let contents = BufferedOutputByteStream()
         body(contents)
         try createDirectory(path.parentDirectory, recursive: true)
@@ -194,11 +199,11 @@ private class LocalFileSystem: FileSystem {
         guard let filestat = try? POSIX.stat(path.asString) else {
             return false
         }
-        return filestat.st_mode & libc.S_IXUSR != 0
+        return filestat.st_mode & SPMLibc.S_IXUSR != 0
     }
 
-    func exists(_ path: AbsolutePath) -> Bool {
-        return Basic.exists(path)
+    func exists(_ path: AbsolutePath, followSymlink: Bool) -> Bool {
+        return Basic.exists(path, followSymlink: followSymlink)
     }
 
     func isDirectory(_ path: AbsolutePath) -> Bool {
@@ -214,10 +219,10 @@ private class LocalFileSystem: FileSystem {
     }
 
     func getDirectoryContents(_ path: AbsolutePath) throws -> [String] {
-        guard let dir = libc.opendir(path.asString) else {
+        guard let dir = SPMLibc.opendir(path.asString) else {
             throw FileSystemError(errno: errno)
         }
-        defer { _ = libc.closedir(dir) }
+        defer { _ = SPMLibc.closedir(dir) }
 
         var result: [String] = []
         var entry = dirent()
@@ -256,7 +261,7 @@ private class LocalFileSystem: FileSystem {
 
     func createDirectory(_ path: AbsolutePath, recursive: Bool) throws {
         // Try to create the directory.
-        let result = mkdir(path.asString, libc.S_IRWXU | libc.S_IRWXG)
+        let result = mkdir(path.asString, SPMLibc.S_IRWXU | SPMLibc.S_IRWXG)
 
         // If it succeeded, we are done.
         if result == 0 { return }
@@ -332,7 +337,7 @@ private class LocalFileSystem: FileSystem {
     }
 
     func removeFileTree(_ path: AbsolutePath) throws {
-        if self.exists(path) {
+        if self.exists(path, followSymlink: false) {
             try Basic.removeFileTree(path)
         }
     }
@@ -412,7 +417,7 @@ private class LocalFileSystem: FileSystem {
             // Update the mode.
             //
             // We ignore the errors for now but we should have a way to report back.
-            _ = libc.chmod(p.pointee.fts_accpath, newMode)
+            _ = SPMLibc.chmod(p.pointee.fts_accpath, newMode)
         }
       #endif
         // FIXME: We only support macOS right now.
@@ -509,7 +514,7 @@ public class InMemoryFileSystem: FileSystem {
 
     // MARK: FileSystem Implementation
 
-    public func exists(_ path: AbsolutePath) -> Bool {
+    public func exists(_ path: AbsolutePath, followSymlink: Bool) -> Bool {
         do {
             return try getNode(path) != nil
         } catch {
@@ -682,14 +687,14 @@ public class InMemoryFileSystem: FileSystem {
 /// is designed for situations where a client is only interested in the contents
 /// *visible* within a subpath and is agnostic to the actual location of those
 /// contents.
-public struct RerootedFileSystemView: FileSystem {
+public class RerootedFileSystemView: FileSystem {
     /// The underlying file system.
     private var underlyingFileSystem: FileSystem
 
     /// The root path within the containing file system.
     private let root: AbsolutePath
 
-    public init(_ underlyingFileSystem: inout FileSystem, rootedAt root: AbsolutePath) {
+    public init(_ underlyingFileSystem: FileSystem, rootedAt root: AbsolutePath) {
         self.underlyingFileSystem = underlyingFileSystem
         self.root = root
     }
@@ -706,8 +711,8 @@ public struct RerootedFileSystemView: FileSystem {
 
     // MARK: FileSystem Implementation
 
-    public func exists(_ path: AbsolutePath) -> Bool {
-        return underlyingFileSystem.exists(formUnderlyingPath(path))
+    public func exists(_ path: AbsolutePath, followSymlink: Bool) -> Bool {
+        return underlyingFileSystem.exists(formUnderlyingPath(path), followSymlink: followSymlink)
     }
 
     public func isDirectory(_ path: AbsolutePath) -> Bool {
@@ -730,7 +735,7 @@ public struct RerootedFileSystemView: FileSystem {
         return try underlyingFileSystem.getDirectoryContents(formUnderlyingPath(path))
     }
 
-    public mutating func createDirectory(_ path: AbsolutePath, recursive: Bool) throws {
+    public func createDirectory(_ path: AbsolutePath, recursive: Bool) throws {
         let path = formUnderlyingPath(path)
         return try underlyingFileSystem.createDirectory(path, recursive: recursive)
     }
@@ -739,12 +744,12 @@ public struct RerootedFileSystemView: FileSystem {
         return try underlyingFileSystem.readFileContents(formUnderlyingPath(path))
     }
 
-    public mutating func writeFileContents(_ path: AbsolutePath, bytes: ByteString) throws {
+    public func writeFileContents(_ path: AbsolutePath, bytes: ByteString) throws {
         let path = formUnderlyingPath(path)
         return try underlyingFileSystem.writeFileContents(path, bytes: bytes)
     }
 
-    public mutating func removeFileTree(_ path: AbsolutePath) throws {
+    public func removeFileTree(_ path: AbsolutePath) throws {
         try underlyingFileSystem.removeFileTree(path)
     }
 

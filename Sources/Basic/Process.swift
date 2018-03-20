@@ -12,7 +12,7 @@ import class Foundation.ProcessInfo
 
 import enum POSIX.SystemError
 import func POSIX.getenv
-import libc
+import SPMLibc
 import Dispatch
 
 /// Process result data which is available after process termination.
@@ -258,7 +258,7 @@ public final class Process: ObjectIdentifierProtocol {
         // modify, so we have to take care about the set we use.
         var mostSignals = sigset_t()
         sigemptyset(&mostSignals)
-        for i in 1 ..< SIGUNUSED {
+        for i in 1 ..< SIGSYS {
             if i == SIGKILL || i == SIGSTOP {
                 continue
             }
@@ -419,7 +419,7 @@ public final class Process: ObjectIdentifierProtocol {
     /// Note: This will signal all processes in the process group.
     public func signal(_ signal: Int32) {
         assert(launched, "The process is not yet launched.")
-        _ = libc.kill(-processID, signal)
+        _ = SPMLibc.kill(-processID, signal)
     }
 }
 
@@ -517,7 +517,7 @@ extension ProcessResult.ExitStatus: Equatable {
 
 /// Open the given pipe.
 private func open(pipe: inout [Int32]) throws {
-    let rv = libc.pipe(&pipe)
+    let rv = SPMLibc.pipe(&pipe)
     guard rv == 0 else {
         throw SystemError.pipe(rv)
     }
@@ -525,7 +525,7 @@ private func open(pipe: inout [Int32]) throws {
 
 /// Close the given fd.
 private func close(fd: inout Int32) throws {
-    let rv = libc.close(fd)
+    let rv = SPMLibc.close(fd)
     guard rv == 0 else {
         throw SystemError.close(rv)
     }
@@ -554,6 +554,7 @@ extension ProcessResult.Error: CustomStringConvertible {
             case .signalled(let signal):
                 stream <<< "signalled(\(signal)): "
             }
+ 
             // Strip sandbox information from arguments to keep things pretty.
             var args = result.arguments
             // This seems a little fragile.
@@ -561,6 +562,17 @@ extension ProcessResult.Error: CustomStringConvertible {
                 args = args.suffix(from: 3).map({$0})
             }
             stream <<< args.map({ $0.shellEscaped() }).joined(separator: " ")
+
+            // Include the output, if present.
+            if let output = try? result.utf8Output() {
+                // We indent the output to keep it visually separated from everything else.
+                let indentation = "    "
+                stream <<< " output:\n" <<< indentation <<< output.replacingOccurrences(of: "\n", with: "\n" + indentation)
+                if !output.hasSuffix("\n") {
+                    stream <<< "\n"
+                }
+            }
+            
             return stream.bytes.asString!
         }
     }

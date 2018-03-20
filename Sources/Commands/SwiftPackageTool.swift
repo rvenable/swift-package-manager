@@ -37,7 +37,8 @@ public class SwiftPackageTool: SwiftTool<PackageToolOptions> {
             toolName: "package",
             usage: "[options] subcommand",
             overview: "Perform operations on Swift packages",
-            args: args
+            args: args,
+            seeAlso: type(of: self).otherToolNames()
         )
     }
     override func runImpl() throws {
@@ -169,7 +170,7 @@ public class SwiftPackageTool: SwiftTool<PackageToolOptions> {
                 graph: graph,
                 options: options.xcodeprojOptions)
 
-            print("generated:", outpath.prettyPath)
+            print("generated:", outpath.prettyPath(cwd: originalWorkingDirectory))
 
         case .generateiOSXcodeproj:
             let graph = try loadPackageGraph()
@@ -520,5 +521,11 @@ extension PackageToolOptions.CompletionToolMode: StringEnumArgument {
             (listDependencies.rawValue, "list all dependencies' names"),
             (listExecutables.rawValue, "list all executables' names"),
         ])
+    }
+}
+
+extension SwiftPackageTool: ToolName {
+    static var toolName: String {
+        return "swift package"
     }
 }

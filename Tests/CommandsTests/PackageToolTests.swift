@@ -29,6 +29,10 @@ final class PackageToolTests: XCTestCase {
         XCTAssert(try execute(["--help"]).contains("USAGE: swift package"))
     }
 
+    func testSeeAlso() throws {
+        XCTAssert(try execute(["--help"]).contains("SEE ALSO: swift build, swift run, swift test"))
+    }
+
     func testVersion() throws {
         XCTAssert(try execute(["--version"]).contains("Swift Package Manager"))
     }
@@ -77,7 +81,7 @@ final class PackageToolTests: XCTestCase {
     }
 
     func testDescribe() throws {
-        fixture(name: "ClangModules/SwiftCMixed") { prefix in
+        fixture(name: "CFamilyTargets/SwiftCMixed") { prefix in
             let output = try execute(["describe", "--type=json"], packagePath: prefix)
             let json = try JSON(bytes: ByteString(encodingAsUTF8: output))
 
@@ -138,7 +142,7 @@ final class PackageToolTests: XCTestCase {
 
     func testInitEmpty() throws {
         mktmpdir { tmpPath in
-            var fs = localFileSystem
+            let fs = localFileSystem
             let path = tmpPath.appending(component: "Foo")
             try fs.createDirectory(path)
             _ = try execute(["-C", path.asString, "init", "--type", "empty"])
@@ -150,7 +154,7 @@ final class PackageToolTests: XCTestCase {
 
     func testInitExecutable() throws {
         mktmpdir { tmpPath in
-            var fs = localFileSystem
+            let fs = localFileSystem
             let path = tmpPath.appending(component: "Foo")
             try fs.createDirectory(path)
             _ = try execute(["-C", path.asString, "init", "--type", "executable"])
@@ -168,7 +172,7 @@ final class PackageToolTests: XCTestCase {
 
     func testInitLibrary() throws {
         mktmpdir { tmpPath in
-            var fs = localFileSystem
+            let fs = localFileSystem
             let path = tmpPath.appending(component: "Foo")
             try fs.createDirectory(path)
             _ = try execute(["-C", path.asString, "init"])
@@ -437,7 +441,7 @@ final class PackageToolTests: XCTestCase {
 
     func testSymlinkedDependency() {
         mktmpdir { path in
-            var fs = localFileSystem
+            let fs = localFileSystem
             let root = path.appending(components: "root")
             let dep = path.appending(components: "dep")
             let depSym = path.appending(components: "depSym")

@@ -52,7 +52,7 @@ extension ArgumentParserError: CustomStringConvertible {
 /// initializer.
 public enum ArgumentConversionError: Swift.Error {
 
-    /// The value is unkown.
+    /// The value is unknown.
     case unknown(value: String)
 
     /// The value could not be converted to the target type.
@@ -502,7 +502,7 @@ public final class ArgumentParser {
     /// A class representing result of the parsed arguments.
     public class Result: CustomStringConvertible {
         /// Internal representation of arguments mapped to their values.
-        private var results = [AnyArgument: Any]()
+        private var results = [String: Any]()
 
         /// Result of the parent parent parser, if any.
         private var parentResult: Result?
@@ -530,16 +530,16 @@ public final class ArgumentParser {
         ///     simplifications in the parsing code.
         fileprivate func add(_ values: [ArgumentKind], for argument: AnyArgument) throws {
             if argument.isArray {
-                var array = results[argument] as? [ArgumentKind] ?? []
+                var array = results[argument.name] as? [ArgumentKind] ?? []
                 array.append(contentsOf: values)
-                results[argument] = array
+                results[argument.name] = array
             } else {
                 // We expect only one value for non-array arguments.
                 guard let value = values.only else {
                     assertionFailure()
                     return
                 }
-                results[argument] = value
+                results[argument.name] = value
             }
         }
 
@@ -547,22 +547,39 @@ public final class ArgumentParser {
         ///
         /// Since the options are optional, their result may or may not be present.
         public func get<T>(_ argument: OptionArgument<T>) -> T? {
-            return (results[AnyArgument(argument)] as? T) ?? parentResult?.get(argument)
+            return (results[argument.name] as? T) ?? parentResult?.get(argument)
         }
 
         /// Array variant for option argument's get(_:).
         public func get<T>(_ argument: OptionArgument<[T]>) -> [T]? {
-            return (results[AnyArgument(argument)] as? [T]) ?? parentResult?.get(argument)
+            return (results[argument.name] as? [T]) ?? parentResult?.get(argument)
         }
 
         /// Get a positional argument's value.
         public func get<T>(_ argument: PositionalArgument<T>) -> T? {
-            return results[AnyArgument(argument)] as? T
+            return results[argument.name] as? T
         }
 
         /// Array variant for positional argument's get(_:).
         public func get<T>(_ argument: PositionalArgument<[T]>) -> [T]? {
-            return results[AnyArgument(argument)] as? [T]
+            return results[argument.name] as? [T]
+        }
+
+        /// Get an argument's value using its name.
+        /// - throws: An ArgumentParserError.invalidValue error if the parsed argument does not match the expected type.
+        public func get<T>(_ name: String) throws -> T? {
+            guard let value = results[name] else {
+                // if we have a parent and this is an option argument, look in the parent result
+                if let parentResult = parentResult, name.hasPrefix("-") {
+                    return try parentResult.get(name)
+                } else {
+                    return nil
+                }
+            }
+            guard let typedValue = value as? T else {
+                throw ArgumentParserError.invalidValue(argument: name, error: .typeMismatch(value: String(describing: value), expectedType: T.self))
+            }
+            return typedValue
         }
 
         /// Get the subparser which was chosen for the given parser.
@@ -597,6 +614,9 @@ public final class ArgumentParser {
 
     /// Overview text of this parser.
     let overview: String
+    
+    /// See more text of this parser.
+    let seeAlso: String?
 
     /// If this parser is a subparser.
     private let isSubparser: Bool
@@ -613,11 +633,13 @@ public final class ArgumentParser {
     ///   Otherwise, first command line argument will be used.
     ///   - usage: The "usage" line of the generated usage text.
     ///   - overview: The "overview" line of the generated usage text.
-    public init(commandName: String? = nil, usage: String, overview: String) {
+    ///   - seeAlso: The "see also" line of generated usage text.
+    public init(commandName: String? = nil, usage: String, overview: String, seeAlso: String? = nil) {
         self.isSubparser = false
         self.commandName = commandName
         self.usage = usage
         self.overview = overview
+        self.seeAlso = seeAlso
     }
 
     /// Create a subparser with its help text.
@@ -626,6 +648,7 @@ public final class ArgumentParser {
         self.commandName = nil
         self.usage = ""
         self.overview = overview
+        self.seeAlso = nil
     }
 
     /// Adds an option to the parser.
@@ -829,10 +852,11 @@ public final class ArgumentParser {
         let padding = 2
 
         let maxWidth: Int
-        // Figure out the max width based on argument length or choose the default width if max width is longer
-        // than the default width.
-        if let maxArgument = (positionalArguments + optionArguments).map({ $0.name.count }).max(),
-            maxArgument < maxWidthDefault {
+        // Determine the max width based on argument length or choose the
+        // default width if max width is longer than the default width.
+        if let maxArgument = (positionalArguments + optionArguments).map({
+            [$0.name, $0.shortName].compactMap({ $0 }).joined(separator: ", ").count
+        }).max(), maxArgument < maxWidthDefault {
             maxWidth = maxArgument + padding + 1
         } else {
             maxWidth = maxWidthDefault
@@ -843,15 +867,15 @@ public final class ArgumentParser {
             // Start with a new line and add some padding.
             stream <<< "\n" <<< Format.asRepeating(string: " ", count: padding)
             let count = argument.count
-            // If the argument name is more than the set width take the whole
-            // line for it, otherwise we can fit everything in one line.
+            // If the argument is longer than the max width, print the usage
+            // on a new line. Otherwise, print the usage on the same line.
             if count >= maxWidth - padding {
                 stream <<< argument <<< "\n"
-                // Align full width because we on a new line.
+                // Align full width because usage is to be printed on a new line.
                 stream <<< Format.asRepeating(string: " ", count: maxWidth + padding)
             } else {
                 stream <<< argument
-                // Align to the remaining empty space we have.
+                // Align to the remaining empty space on the line.
                 stream <<< Format.asRepeating(string: " ", count: maxWidth - count)
             }
             stream <<< usage
@@ -870,10 +894,10 @@ public final class ArgumentParser {
         if optionArguments.count > 0 {
             stream <<< "\n\n"
             stream <<< "OPTIONS:"
-            for argument in optionArguments.lazy.sorted(by: {$0.name < $1.name}) {
+            for argument in optionArguments.lazy.sorted(by: { $0.name < $1.name }) {
                 guard let usage = argument.usage else { continue }
                 // Create name with its shortname, if available.
-                let name = [argument.name, argument.shortName].flatMap({ $0 }).joined(separator: ", ")
+                let name = [argument.name, argument.shortName].compactMap({ $0 }).joined(separator: ", ")
                 print(formatted: name, usage: usage, on: stream)
             }
 
@@ -896,11 +920,17 @@ public final class ArgumentParser {
         if positionalArguments.count > 0 {
             stream <<< "\n\n"
             stream <<< "POSITIONAL ARGUMENTS:"
-            for argument in positionalArguments.lazy.sorted(by: {$0.name < $1.name}) {
+            for argument in positionalArguments {
                 guard let usage = argument.usage else { continue }
                 print(formatted: argument.name, usage: usage, on: stream)
             }
         }
+        
+        if let seeAlso = seeAlso {
+            stream <<< "\n\n"
+            stream <<< "SEE ALSO: \(seeAlso)"
+        }
+        
         stream <<< "\n"
         stream.flush()
     }

@@ -13,6 +13,7 @@ import class Foundation.ProcessInfo
 import Basic
 import Build
 import Utility
+import PackageGraph
 
 import func POSIX.exit
 
@@ -73,6 +74,10 @@ public class TestToolOptions: ToolOptions {
             return .listTests
         }
 
+        if shouldGenerateLinuxMain {
+            return .generateLinuxMain
+        }
+
         return .runSerial
     }
 
@@ -84,6 +89,9 @@ public class TestToolOptions: ToolOptions {
 
     /// List the tests and exit.
     var shouldListTests = false
+
+    /// Generate LinuxMain entries and exit.
+    var shouldGenerateLinuxMain = false
 
     var testCaseSpecifier: TestCaseSpecifier = .none
 }
@@ -103,6 +111,7 @@ public enum TestCaseSpecifier {
 public enum TestMode {
     case version
     case listTests
+    case generateLinuxMain
     case runSerial
     case runParallel
 }
@@ -115,18 +124,19 @@ public class SwiftTestTool: SwiftTool<TestToolOptions> {
             toolName: "test",
             usage: "[options]",
             overview: "Build and run tests",
-            args: args
+            args: args,
+            seeAlso: type(of: self).otherToolNames()
         )
     }
 
     override func runImpl() throws {
-
         switch options.mode {
         case .version:
             print(Versioning.currentVersion.completeDisplayString)
 
         case .listTests:
-            let testPath = try buildTestsIfNeeded(options)
+            let graph = try loadPackageGraph()
+            let testPath = try buildTestsIfNeeded(options, graph: graph)
             let testSuites = try getTestSuites(path: testPath)
             let tests = testSuites.filteredTests(specifier: options.testCaseSpecifier)
 
@@ -135,8 +145,19 @@ public class SwiftTestTool: SwiftTool<TestToolOptions> {
                 print(test.specifier)
             }
 
+        case .generateLinuxMain:
+          #if os(Linux)
+            warning(message: "can't discover new tests on Linux; please use this option on macOS instead")
+          #endif
+            let graph = try loadPackageGraph()
+            let testPath = try buildTestsIfNeeded(options, graph: graph)
+            let testSuites = try getTestSuites(path: testPath)
+            let generator = LinuxMainGenerator(graph: graph, testSuites: testSuites)
+            try generator.generate()
+
         case .runSerial:
-            let testPath = try buildTestsIfNeeded(options)
+            let graph = try loadPackageGraph()
+            let testPath = try buildTestsIfNeeded(options, graph: graph)
             var ranSuccessfully = true
 
             switch options.testCaseSpecifier {
@@ -171,7 +192,8 @@ public class SwiftTestTool: SwiftTool<TestToolOptions> {
             }
 
         case .runParallel:
-            let testPath = try buildTestsIfNeeded(options)
+            let graph = try loadPackageGraph()
+            let testPath = try buildTestsIfNeeded(options, graph: graph)
             let testSuites = try getTestSuites(path: testPath)
             let tests = testSuites.filteredTests(specifier: options.testCaseSpecifier)
 
@@ -194,8 +216,8 @@ public class SwiftTestTool: SwiftTool<TestToolOptions> {
     /// Builds the "test" target if enabled in options.
     ///
     /// - Returns: The path to the test binary.
-    private func buildTestsIfNeeded(_ options: TestToolOptions) throws -> AbsolutePath {
-        let buildPlan = try self.buildPlan()
+    private func buildTestsIfNeeded(_ options: TestToolOptions, graph: PackageGraph) throws -> AbsolutePath {
+        let buildPlan = try BuildPlan(buildParameters: self.buildParameters(), graph: graph)
         if options.shouldBuildTests {
             try build(plan: buildPlan, subset: .allIncludingTests)
         }
@@ -223,6 +245,11 @@ public class SwiftTestTool: SwiftTool<TestToolOptions> {
             option: parser.add(option: "--list-tests", shortName: "-l", kind: Bool.self,
                 usage: "Lists test methods in specifier format"),
             to: { $0.shouldListTests = $1 })
+
+        binder.bind(
+            option: parser.add(option: "--generate-linuxmain", kind: Bool.self,
+                usage: "Generate LinuxMain.swift entries for the package"),
+            to: { $0.shouldGenerateLinuxMain = $1 })
 
         binder.bind(
             option: parser.add(option: "--parallel", kind: Bool.self,
@@ -400,9 +427,10 @@ final class TestRunner {
 /// A class to run tests in parallel.
 final class ParallelTestRunner {
     /// An enum representing result of a unit test execution.
-    enum TestResult {
-        case success(UnitTest)
-        case failure(UnitTest, output: String)
+    struct TestResult {
+        var unitTest: UnitTest
+        var output: String
+        var success: Bool
     }
 
     /// Path to XCTest binary.
@@ -437,7 +465,14 @@ final class ParallelTestRunner {
     init(testPath: AbsolutePath, processSet: ProcessSet) {
         self.testPath = testPath
         self.processSet = processSet
-        progressBar = createProgressBar(forStream: stdoutStream, header: "Tests")
+        progressBar = createProgressBar(forStream: stdoutStream, header: "Testing:")
+    }
+
+    /// Whether to display output from successful tests.
+    private var shouldOutputSuccess: Bool {
+        // FIXME: It is weird to read Process's verbosity to determine this, we
+        // should improve our verbosity infrastructure.
+        return Process.verbose
     }
 
     /// Updates the progress bar status.
@@ -476,28 +511,28 @@ final class ParallelTestRunner {
                     let testRunner = TestRunner(
                         path: self.testPath, xctestArg: test.specifier, processSet: self.processSet)
                     let (success, output) = testRunner.test()
-                    if success {
-                        self.finishedTests.enqueue(.success(test))
-                    } else {
+                    if !success {
                         self.ranSuccessfully = false
-                        self.finishedTests.enqueue(.failure(test, output: output))
                     }
+                    self.finishedTests.enqueue(TestResult(unitTest: test, output: output, success: success))
                 }
             }
             thread.start()
             return thread
         })
 
-        // Holds the output of test cases which failed.
-        var failureOutput = [String]()
+        // Holds the output of test cases.
+        var outputs: (success: [String], failure: [String]) = ([], [])
+
         // Report (consume) the tests which have finished running.
         while let result = finishedTests.dequeue() {
-            switch result {
-            case .success(let test):
-                updateProgress(for: test)
-            case .failure(let test, let output):
-                updateProgress(for: test)
-                failureOutput.append(output)
+            updateProgress(for: result.unitTest)
+            if result.success {
+                if shouldOutputSuccess {
+                    outputs.success.append(result.output)
+                }
+            } else {
+                outputs.failure.append(result.output)
             }
             // We can't enqueue a sentinel into finished tests queue because we won't know
             // which test is last one so exit this when all the tests have finished running.
@@ -506,17 +541,21 @@ final class ParallelTestRunner {
 
         // Wait till all threads finish execution.
         workers.forEach { $0.join() }
-        progressBar.complete()
-        printFailures(failureOutput)
+        progressBar.complete(success: outputs.failure.isEmpty)
+        
+        if shouldOutputSuccess {
+            printOutput(outputs.success)
+        }
+        printOutput(outputs.failure)
     }
 
-    /// Prints the output of the tests that failed.
-    private func printFailures(_ failureOutput: [String]) {
+    /// Prints the output of the tests.
+    private func printOutput(_ lineOutput: [String]) {
         stdoutStream <<< "\n"
-        for error in failureOutput {
+        for error in lineOutput {
             stdoutStream <<< error
         }
-        if !failureOutput.isEmpty {
+        if !lineOutput.isEmpty {
             stdoutStream <<< "\n"
         }
         stdoutStream.flush()
@@ -618,5 +657,11 @@ fileprivate extension Sequence where Iterator.Element == TestSuite {
         case .specific(let name):
             return allTests.filter{ $0.specifier == name }
         }
+    }
+}
+
+extension SwiftTestTool: ToolName {
+    static var toolName: String {
+        return "swift test"
     }
 }

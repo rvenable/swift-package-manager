@@ -19,8 +19,8 @@ All targets should be declared in the `Package.swift` manifest file.  Unless the
 relative path of the target is declared, the Package Manager will look for
 a directory matching the name of the target in these places:
 
-Regular targets: package root, Sources, Source, src, srcs.  
-Test targets: Tests, package root, Sources, Source, src, srcs.
+Regular targets: Sources, Source, src, srcs.  
+Test targets: Tests, Sources, Source, src, srcs.
 
 ## Package Manifest File Format Reference
 
@@ -84,7 +84,7 @@ environment variable, `PKG_CONFIG_PATH`, which will be searched before the
 standard locations.
 
 _NOTE: This feature does not require pkg-config to be installed. However, if
-installed it will used to find additional platform specific pc file locations
+installed it will be used to find additional platform specific pc file locations
 which might be unknown to SwiftPM._
 
 #### providers

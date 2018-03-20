@@ -40,7 +40,7 @@ class PackageGraphTests: XCTestCase {
         PackageGraphTester(g) { result in
             result.check(packages: "Bar", "Foo", "Baz")
             result.check(targets: "Bar", "Foo", "Baz", "FooDep")
-            result.check(testModules: "BazTests", "FooTests")
+            result.check(testModules: "BazTests")
             result.check(dependencies: "FooDep", target: "Foo")
             result.check(dependencies: "Foo", target: "Bar")
             result.check(dependencies: "Bar", target: "Baz")
@@ -117,7 +117,7 @@ class PackageGraphTests: XCTestCase {
         PackageGraphTester(g) { result in
             result.check(packages: "Bar", "Foo")
             result.check(targets: "Bar", "Foo")
-            result.check(testModules: "BarTests", "SomeTests")
+            result.check(testModules: "BarTests")
         }
     }
 
@@ -164,9 +164,136 @@ class PackageGraphTests: XCTestCase {
 
         DiagnosticsEngineTester(diagnostics) { result in
             result.check(diagnostic: "target 'Bar' in package 'Bar' contains no valid source files", behavior: .warning)
-            result.check(diagnostic: "target 'Bar' referenced in product 'Bar' could not be found", behavior: .error, location: "Package: Bar /Bar")
-            result.check(diagnostic: "product dependency 'Bar' not found", behavior: .error, location: "Package: Foo /Foo")
+            result.check(diagnostic: "target 'Bar' referenced in product 'Bar' could not be found", behavior: .error, location: "'Bar' /Bar")
+            result.check(diagnostic: "product dependency 'Bar' not found", behavior: .error, location: "'Foo' /Foo")
 
+        }
+    }
+
+    func testUnusedDependency() throws {
+        let fs = InMemoryFileSystem(emptyFiles:
+            "/Foo/Sources/Foo/foo.swift",
+            "/Bar/Sources/Bar/bar.swift",
+            "/Baz/Sources/Baz/baz.swift",
+            "/Biz/Sources/Biz/main.swift"
+        )
+
+        let diagnostics = DiagnosticsEngine()
+        _ = loadMockPackageGraph4([
+            "/Bar": Package(
+                name: "Bar",
+                products: [
+                    .library(name: "BarLibrary", targets: ["Bar"]),
+                ],
+                targets: [
+                    .target(name: "Bar"),
+                ]),
+            "/Baz": Package(
+                name: "Baz",
+                products: [
+                    .library(name: "BazLibrary", targets: ["Baz"]),
+                ],
+                targets: [
+                    .target(name: "Baz"),
+                ]),
+            "/Biz": Package(
+                name: "Biz",
+                products: [
+                    .executable(name: "biz", targets: ["Biz"]),
+                ],
+                targets: [
+                    .target(name: "Biz"),
+                ]),
+            "/Foo": .init(
+                name: "Foo",
+                dependencies: [
+                    .package(url: "/Bar", from: "1.0.0"),
+                    .package(url: "/Baz", from: "1.0.0"),
+                    .package(url: "/Biz", from: "1.0.0"),
+                ],
+                targets: [
+                    .target(name: "Foo", dependencies: ["BarLibrary"]),
+                ]),
+            ], root: "/Foo", diagnostics: diagnostics, in: fs)
+
+        DiagnosticsEngineTester(diagnostics) { result in
+            result.check(diagnostic: "dependency 'Baz' is not used by any target", behavior: .warning)
+        }
+    }
+    
+    func testUnusedDependency2() throws {
+        typealias Package = PackageDescription4.Package
+        let fs = InMemoryFileSystem(emptyFiles:
+            "/Foo/module.modulemap",
+            "/Bar/Sources/Bar/main.swift"
+        )
+        
+        let diagnostics = DiagnosticsEngine()
+        _ = loadMockPackageGraph4([
+            "/Foo": Package(name: "Foo"),
+            "/Bar": Package(
+                name: "Bar",
+                dependencies: [
+                    .package(url: "/Foo", from: "1.0.0"),
+                    ],
+                targets: [
+                    .target(name: "Bar"),
+                    ]),
+            ], root: "/Bar", diagnostics: diagnostics, in: fs)
+        
+        // We don't expect any unused dependency diagnostics from a system module package.
+        DiagnosticsEngineTester(diagnostics) { _ in }
+    }
+
+    func testDuplicateInterPackageTargetNames() throws {
+        let fs = InMemoryFileSystem(emptyFiles:
+            "/Start/Sources/Foo/foo.swift",
+            "/Start/Sources/Bar/bar.swift",
+            "/Dep1/Sources/Baz/baz.swift",
+            "/Dep2/Sources/Foo/foo.swift",
+            "/Dep2/Sources/Bam/bam.swift"
+        )
+
+        let diagnostics = DiagnosticsEngine()
+        _ = loadMockPackageGraph4([
+            "/Start": Package(
+                name: "Start",
+                products: [
+                    .library(name: "FooLibrary", targets: ["Foo"]),
+                    .library(name: "BarLibrary", targets: ["Bar"]),
+                ],
+                dependencies: [
+                    .package(url: "/Dep1", from: "1.0.0"),
+                ],
+                targets: [
+                    .target(name: "Foo", dependencies: ["BazLibrary"]),
+                    .target(name: "Bar"),
+                ]),
+            "/Dep1": Package(
+                name: "Dep1",
+                products: [
+                    .library(name: "BazLibrary", targets: ["Baz"]),
+                ],
+                dependencies: [
+                    .package(url: "/Dep2", from: "1.0.0"),
+                ],
+                targets: [
+                    .target(name: "Baz", dependencies: ["FooLibrary"]),
+                ]),
+            "/Dep2": Package(
+                name: "Dep2",
+                products: [
+                    .library(name: "FooLibrary", targets: ["Foo"]),
+                    .library(name: "BamLibrary", targets: ["Bam"]),
+                ],
+                targets: [
+                    .target(name: "Foo"),
+                    .target(name: "Bam"),
+                ]),
+            ], root: "/Start", diagnostics: diagnostics, in: fs)
+
+        DiagnosticsEngineTester(diagnostics) { result in
+            result.check(diagnostic: "multiple targets named 'Foo'", behavior: .error, location: "'Dep2' /Dep2")
         }
     }
 
@@ -177,5 +304,8 @@ class PackageGraphTests: XCTestCase {
         ("testProductDependencies", testProductDependencies),
         ("testTestTargetDeclInExternalPackage", testTestTargetDeclInExternalPackage),
         ("testEmptyDependency", testEmptyDependency),
+        ("testUnusedDependency", testUnusedDependency),
+        ("testUnusedDependency2", testUnusedDependency2),
+        ("testDuplicateInterPackageTargetNames", testDuplicateInterPackageTargetNames),
     ]
 }

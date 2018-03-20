@@ -14,7 +14,7 @@ import Basic
 import struct Commands.Destination
 import PackageModel
 import Utility
-import libc
+import SPMLibc
 import class Foundation.ProcessInfo
 
 typealias ProcessID = Basic.Process.ProcessID
@@ -208,7 +208,7 @@ class MiscellaneousTestCase: XCTestCase {
 
     func testSecondBuildIsNullInModulemapGen() throws {
         // Make sure that swiftpm doesn't rebuild second time if the modulemap is being generated.
-        fixture(name: "ClangModules/SwiftCMixed") { prefix in
+        fixture(name: "CFamilyTargets/SwiftCMixed") { prefix in
             var output = try executeSwiftBuild(prefix, printIfError: true)
             XCTAssertFalse(output.isEmpty)
             output = try executeSwiftBuild(prefix, printIfError: true)
@@ -220,14 +220,34 @@ class MiscellaneousTestCase: XCTestCase {
         // Running swift-test fixtures on linux is not yet possible.
       #if os(macOS)
         fixture(name: "Miscellaneous/ParallelTestsPkg") { prefix in
-            // First try normal serial testing.
-            var output = try SwiftPMProduct.SwiftTest.execute([], packagePath: prefix, printIfError: true)
-            XCTAssert(output.contains("Executed 2 tests"))
+          // First try normal serial testing.
+          do {
+            _ = try SwiftPMProduct.SwiftTest.execute([], packagePath: prefix, printIfError: true)
+          } catch SwiftPMProductError.executionFailure(_, _, let stderr) {
+            XCTAssertTrue(stderr.contains("Executed 2 tests"))
+          }
+
+          do {
             // Run tests in parallel.
-            output = try SwiftPMProduct.SwiftTest.execute(["--parallel"], packagePath: prefix, printIfError: true)
-            XCTAssert(output.contains("testExample2"))
+            _ = try SwiftPMProduct.SwiftTest.execute(["--parallel"], packagePath: prefix, printIfError: false)
+          } catch SwiftPMProductError.executionFailure(_, let output, _) {
             XCTAssert(output.contains("testExample1"))
+            XCTAssert(output.contains("testExample2"))
+            XCTAssert(!output.contains("'ParallelTestsTests' passed"))
+            XCTAssert(output.contains("'ParallelTestsFailureTests' failed"))
             XCTAssert(output.contains("100%"))
+          }
+
+          do {
+            // Run tests in parallel with verbose output.
+            _ = try SwiftPMProduct.SwiftTest.execute(["--parallel", "--verbose"], packagePath: prefix, printIfError: false)
+          } catch SwiftPMProductError.executionFailure(_, let output, _) {
+            XCTAssert(output.contains("testExample1"))
+            XCTAssert(output.contains("testExample2"))
+            XCTAssert(output.contains("'ParallelTestsTests' passed"))
+            XCTAssert(output.contains("'ParallelTestsFailureTests' failed"))
+            XCTAssert(output.contains("100%"))
+          }
         }
       #endif
     }
@@ -249,7 +269,7 @@ class MiscellaneousTestCase: XCTestCase {
 #endif
     }
 
-    func testPkgConfigClangModules() throws {
+    func testPkgConfigCFamilyTargets() throws {
         fixture(name: "Miscellaneous/PkgConfig") { prefix in
             let systemModule = prefix.appending(component: "SystemModule")
             // Create a shared library.
@@ -357,6 +377,58 @@ class MiscellaneousTestCase: XCTestCase {
         }
     }
 
+    func testSwiftTestLinuxMainGeneration() throws {
+      #if os(macOS)
+        fixture(name: "Miscellaneous/ParallelTestsPkg") { prefix in
+            let fs = localFileSystem
+            try SwiftPMProduct.SwiftTest.execute(["--generate-linuxmain"], packagePath: prefix)
+
+            // Check linux main.
+            let linuxMain = prefix.appending(components: "Tests", "LinuxMain.swift")
+            XCTAssertEqual(try fs.readFileContents(linuxMain), """
+                import XCTest
+
+                import ParallelTestsPkgTests
+
+                var tests = [XCTestCaseEntry]()
+                tests += ParallelTestsPkgTests.__allTests()
+
+                XCTMain(tests)
+
+                """)
+
+            // Check test manifest.
+            let testManifest = prefix.appending(components: "Tests", "ParallelTestsPkgTests", "XCTestManifests.swift")
+            XCTAssertEqual(try fs.readFileContents(testManifest), """
+                import XCTest
+
+                extension ParallelTestsFailureTests {
+                    static let __allTests = [
+                        ("testSureFailure", testSureFailure),
+                    ]
+                }
+                
+                extension ParallelTestsTests {
+                    static let __allTests = [
+                        ("testExample1", testExample1),
+                        ("testExample2", testExample2),
+                    ]
+                }
+                
+                #if !os(macOS)
+                public func __allTests() -> [XCTestCaseEntry] {
+                    return [
+                        testCase(ParallelTestsFailureTests.__allTests),
+                        testCase(ParallelTestsTests.__allTests),
+                    ]
+                }
+                #endif
+
+                """)
+        }
+      #endif
+    }
+
     static var allTests = [
         ("testPrintsSelectedDependencyVersion", testPrintsSelectedDependencyVersion),
         ("testPackageWithNoSources", testPackageWithNoSources),
@@ -373,8 +445,9 @@ class MiscellaneousTestCase: XCTestCase {
         ("testSwiftTestParallel", testSwiftTestParallel),
         ("testSwiftTestFilter", testSwiftTestFilter),
         ("testOverridingSwiftcArguments", testOverridingSwiftcArguments),
-        ("testPkgConfigClangModules", testPkgConfigClangModules),
+        ("testPkgConfigCFamilyTargets", testPkgConfigCFamilyTargets),
         ("testCanKillSubprocessOnSigInt", testCanKillSubprocessOnSigInt),
         ("testReportingErrorFromGitCommand", testReportingErrorFromGitCommand),
+        ("testSwiftTestLinuxMainGeneration", testSwiftTestLinuxMainGeneration),
     ]
 }

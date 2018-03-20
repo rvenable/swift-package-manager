@@ -34,7 +34,7 @@ public struct AnyDiagnostic: DiagnosticData {
     }
 }
 
-/// Represents unknown diagnosic location.
+/// Represents unknown diagnostic location.
 public final class UnknownLocation: DiagnosticLocation {
 
     /// The singleton instance.
@@ -141,7 +141,7 @@ public enum PackageLocation {
         public var localizedDescription: String {
             let stream = BufferedOutputByteStream()
             if let name = name {
-                stream <<< "Package: \(name) "
+                stream <<< "'\(name)' "
             }
             stream <<< packagePath.asString
             return stream.bytes.asString!

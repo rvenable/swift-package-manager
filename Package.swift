@@ -15,12 +15,16 @@ import PackageDescription
 let package = Package(
     name: "SwiftPM",
     products: [
+        // The `libSwiftPM` set of interfaces to programatically work with Swift
+        // packages.
+        //
+        // NOTE: This API is *unstable* and may change at any time.
         .library(
             name: "SwiftPM",
             type: .dynamic,
             targets: [
                 "clibc",
-                "libc",
+                "SPMLibc",
                 "POSIX",
                 "Basic",
                 "Utility",
@@ -37,11 +41,15 @@ let package = Package(
         ),
 
         // Collection of general purpose utilities.
+        //
+        // NOTE: This product consists of *unsupported*, *unstable* API. These
+        // APIs are implementation details of the package manager. Depend on it
+        // at your own risk.
         .library(
             name: "Utility",
             targets: [
                 "clibc",
-                "libc",
+                "SPMLibc",
                 "POSIX",
                 "Basic",
                 "Utility",
@@ -68,16 +76,16 @@ let package = Package(
             dependencies: []),
         .target(
             /** Cross-platform access to bare `libc` functionality. */
-            name: "libc",
+            name: "SPMLibc",
             dependencies: ["clibc"]),
         .target(
             /** “Swifty” POSIX functions from libc */
             name: "POSIX",
-            dependencies: ["libc"]),
+            dependencies: ["SPMLibc"]),
         .target(
             /** Basic support library */
             name: "Basic",
-            dependencies: ["libc", "POSIX"]),
+            dependencies: ["SPMLibc", "POSIX"]),
         .target(
             /** Abstractions for common operations, should migrate to Basic */
             name: "Utility",

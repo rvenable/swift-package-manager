@@ -8,7 +8,7 @@
  See http://swift.org/CONTRIBUTORS.txt for Swift project authors
 */
 
-import libc
+import SPMLibc
 import POSIX
 import Foundation
 
@@ -28,7 +28,7 @@ import Foundation
 /// otherwise it is not (any symbolic links in path components other than the last one are always traversed).
 /// If symbolic links are followed and the file system entity at `path` is a symbolic link that points to a
 /// non-existent path, then this function returns nil.
-private func stat(_ path: AbsolutePath, followSymlink: Bool = true) throws -> libc.stat {
+private func stat(_ path: AbsolutePath, followSymlink: Bool = true) throws -> SPMLibc.stat {
     if followSymlink {
         return try stat(path.asString)
     }
@@ -89,7 +89,7 @@ public func makeDirectories(_ path: AbsolutePath) throws {
 }
 
 /// Recursively deletes the file system entity at `path`.  If there is no file system entity at `path`, this function
-/// does nothing (in particular, this is not considered to be an error).
+/// throws an error.
 public func removeFileTree(_ path: AbsolutePath) throws {
     try FileManager.default.removeItem(atPath: path.asString)
 }
@@ -98,17 +98,17 @@ public func removeFileTree(_ path: AbsolutePath) throws {
 /// be a relative path, otherwise it will be absolute.
 public func createSymlink(_ path: AbsolutePath, pointingAt dest: AbsolutePath, relative: Bool = true) throws {
     let destString = relative ? dest.relative(to: path.parentDirectory).asString : dest.asString
-    let rv = libc.symlink(destString, path.asString)
+    let rv = SPMLibc.symlink(destString, path.asString)
     guard rv == 0 else { throw SystemError.symlink(errno, path.asString, dest: destString) }
 }
 
 public func rename(_ path: AbsolutePath, to dest: AbsolutePath) throws {
-    let rv = libc.rename(path.asString, dest.asString)
+    let rv = SPMLibc.rename(path.asString, dest.asString)
     guard rv == 0 else { throw SystemError.rename(errno, old: path.asString, new: dest.asString) }
 }
 
 public func unlink(_ path: AbsolutePath) throws {
-    let rv = libc.unlink(path.asString)
+    let rv = SPMLibc.unlink(path.asString)
     guard rv == 0 else { throw SystemError.unlink(errno, path.asString) }
 }
 
@@ -214,16 +214,13 @@ public class RecursibleDirectoryContentsGenerator: IteratorProtocol, Sequence {
 extension AbsolutePath {
     /// Returns a path suitable for display to the user (if possible, it is made
     /// to be relative to the current working directory).
-    /// - Note: Therefore this function relies on the working directory's not
-    /// changing during execution.
-    public var prettyPath: String {
-        let currDir = currentWorkingDirectory
+    public func prettyPath(cwd: AbsolutePath = currentWorkingDirectory) -> String {
         // FIXME: Instead of string prefix comparison we should add a proper API
         // to AbsolutePath to determine ancestry.
-        if self == currDir {
+        if self == cwd {
             return "."
-        } else if self.asString.hasPrefix(currDir.asString + "/") {
-            return "./" + self.relative(to: currDir).asString
+        } else if self.asString.hasPrefix(cwd.asString + "/") {
+            return "./" + self.relative(to: cwd).asString
         } else {
             return self.asString
         }

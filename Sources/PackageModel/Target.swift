@@ -92,7 +92,7 @@ public class SwiftTarget: Target {
         productDependencies: [(name: String, package: String?)] = [],
         swiftVersion: Int
     ) {
-        let type: Kind = isTest ? .test : sources.computeModuleType()
+        let type: Kind = isTest ? .test : sources.computeTargetType()
         self.swiftVersion = swiftVersion
         super.init(
             name: name,
@@ -103,7 +103,7 @@ public class SwiftTarget: Target {
     }
 }
 
-public class CTarget: Target {
+public class SystemLibraryTarget: Target {
 
     /// The name of pkgConfig file, if any.
     public let pkgConfig: String?
@@ -131,7 +131,7 @@ public class CTarget: Target {
 
 public class ClangTarget: Target {
 
-    /// THe default public include directory component.
+    /// The default public include directory component.
     public static let defaultPublicHeadersComponent = "include"
 
     /// The path to include directory.
@@ -140,13 +140,16 @@ public class ClangTarget: Target {
     /// True if this is a C++ target.
     public let isCXX: Bool
 
-    /// The C or C++ language standard flag.
-    public let languageStandard: String?
+    /// The C language standard flag.
+    public let cLanguageStandard: String?
+
+    /// The C++ language standard flag.
+    public let cxxLanguageStandard: String?
 
     public init(
         name: String,
-        isCXX: Bool,
-        languageStandard: String?,
+        cLanguageStandard: String?,
+        cxxLanguageStandard: String?,
         includeDir: AbsolutePath,
         isTest: Bool = false,
         sources: Sources,
@@ -154,10 +157,10 @@ public class ClangTarget: Target {
         productDependencies: [(name: String, package: String?)] = []
     ) {
         assert(includeDir.contains(sources.root), "\(includeDir) should be contained in the source root \(sources.root)")
-        assert(sources.containsCXXFiles == isCXX)
-        let type: Kind = isTest ? .test : sources.computeModuleType()
-        self.isCXX = isCXX
-        self.languageStandard = languageStandard
+        let type: Kind = isTest ? .test : sources.computeTargetType()
+        self.isCXX = sources.containsCXXFiles
+        self.cLanguageStandard = cLanguageStandard
+        self.cxxLanguageStandard = cxxLanguageStandard
         self.includeDir = includeDir
         super.init(
             name: name,
@@ -176,7 +179,7 @@ extension Target: CustomStringConvertible {
 
 extension Sources {
     /// Determine target type based on the sources.
-    fileprivate func computeModuleType() -> Target.Kind {
+    fileprivate func computeTargetType() -> Target.Kind {
         let isLibrary = !relativePaths.contains { path in
             let file = path.basename.lowercased()
             // Look for a main.xxx file avoiding cases like main.xxx.xxx

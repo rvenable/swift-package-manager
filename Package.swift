@@ -19,6 +19,7 @@ let package = Package(
             name: "SwiftPM",
             type: .dynamic,
             targets: [
+                "Commands",
                 "clibc",
                 "libc",
                 "POSIX",

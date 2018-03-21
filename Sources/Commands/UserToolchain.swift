@@ -76,8 +76,8 @@ public struct UserToolchain: Toolchain {
                 searchPaths: envSearchPaths)
         }
 
-        // Get the binDir from destination.
-        let binDir = destination.binDir
+        // Get the binDir from 'xcrun --find swiftc'.
+        let binDir = AbsolutePath(try Process.checkNonZeroExit(arguments: ["xcrun", "--find", "swiftc"]).chomp().components(separatedBy: "/").dropLast().joined(separator: "/"))
 
         // First look in env and then in bin dir.
         swiftCompiler = lookup(fromEnv: "SWIFT_EXEC") ?? binDir.appending(component: "swiftc")
